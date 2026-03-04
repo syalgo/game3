@@ -80,7 +80,7 @@
   let last = 0;
 
   // ===== 랭킹 =====
-  const LS_KEY = "escalator_ranking_v2";
+  const LS_KEY = "escalator_ranking_v3";
   const loadRanks = () => {
     try { const a = JSON.parse(localStorage.getItem(LS_KEY) || "[]"); return Array.isArray(a)?a:[]; }
     catch { return []; }
@@ -94,9 +94,7 @@
     return top;
   };
 
-  // ===== 계단 기준점(월드 앵커) =====
-  // 계단 선(윗면)이 anchor를 기준으로 y = anchorY - floor((x-anchorX)/STEP)*STEP
-  // 흐름으로 anchorX만 계속 이동시키되, STEP 래핑 시 anchorY를 같이 보정해서 "튐" 제거.
+  // ===== 계단 기준점(앵커) =====
   const STAIRS_X0 = Math.floor(W * 0.60);
   const STAIRS_Y0 = Math.floor(H * 0.20);
 
@@ -104,23 +102,22 @@
   let anchorY = STAIRS_Y0;
 
   function normalizeAnchor(){
-    // anchorX가 기준에서 너무 멀어지면 STEP 단위로 되감고, 그만큼 anchorY도 함께 보정
     const k = Math.floor((STAIRS_X0 - anchorX) / STEP);
     if (k !== 0){
       anchorX += k * STEP;
-      anchorY -= k * STEP; // 계단 기울기 유지 (중요: 이게 "계속 올라감" 버그 방지 핵심)
+      anchorY -= k * STEP; // 래핑 시 y도 같이 보정(튐 방지)
     }
   }
 
   function surfaceYAt(x){
     const dx = x - anchorX;
-    const idx = Math.floor(dx / STEP);     // 오른쪽으로 갈수록 idx 증가
+    const idx = Math.floor(dx / STEP);
     return anchorY - idx * STEP;
   }
 
-  // 계단이 존재하는 영역: anchorX 근처(오른쪽)부터 시작해서 오른쪽/아래로 꽉 찬 덩어리
+  // 계단이 존재하는 x범위를 넓혀서(왼쪽도) 착지 가능하게
   function stairsExistAt(x){
-    return x >= anchorX - STEP*0.5; // 계단 시작선 약간 여유
+    return x >= anchorX - STEP * 80; // 왼쪽으로 충분히 넓게
   }
 
   function reset(){
@@ -130,13 +127,18 @@
     last = performance.now();
 
     player.x = Math.floor(W * 0.45);
-    player.y = Math.floor(H * 0.30);
     player.vx = 0;
     player.vy = 0;
     player.onGround = false;
 
     anchorX = STAIRS_X0;
     anchorY = STAIRS_Y0;
+
+    // ✅ 시작할 때 계단 표면 위에 올려놓기
+    const midX = player.x + player.w/2;
+    const surfY = surfaceYAt(midX);
+    player.y = surfY - player.h;
+    player.onGround = true;
   }
 
   canvas.addEventListener("click", () => {
@@ -155,41 +157,31 @@
     survive += dt;
     const flow = BASE_FLOW + FLOW_ACCEL * survive;
 
-    // 계단이 왼쪽으로 흐르는 느낌
     anchorX -= flow * dt;
-    // 살짝 아래로 내려가는 느낌(시각/난이도)
     anchorY += (flow * 0.18) * dt;
-
     normalizeAnchor();
 
-    // 입력 → 속도
     const wish = (key.d?1:0) - (key.a?1:0);
     const control = player.onGround ? 1.0 : AIR_CONTROL;
     player.vx = wish * MOVE_SPEED * control;
 
-    // 점프(한 번)
     if (key.w && player.onGround && !wLock){
       player.vy = -JUMP_VY;
       player.onGround = false;
       wLock = true;
     }
 
-    // 이전 위치 저장(착지 판정용)
     const prevY = player.y;
 
-    // 중력
     player.vy += GRAVITY * dt;
 
-    // 이동
     player.x += player.vx * dt;
     player.y += player.vy * dt;
 
-    // 화면 아래로 떨어지면 사망
     if (player.y > H + 80) { die(); return; }
-    // 좌우 너무 벗어나면 사망(선택)
-    if (player.x < -120 || player.x > W + 120) { die(); return; }
+    if (player.x < -200 || player.x > W + 200) { die(); return; }
 
-    // ===== 착지 판정 (중요: "위에서 내려올 때만" 착지) =====
+    // 착지: 위에서 내려오며 표면을 통과할 때만
     player.onGround = false;
 
     const midX = player.x + player.w/2;
@@ -198,29 +190,11 @@
     const prevBottom = prevY + player.h;
     const nowBottom  = player.y + player.h;
 
-    // 계단 영역 위에 있을 때만 착지 가능
     if (stairsExistAt(midX)){
-      // 위에서 아래로 내려오며 표면을 통과할 때만 착지
       if (player.vy >= 0 && prevBottom <= surfY && nowBottom >= surfY){
         player.y = surfY - player.h;
         player.vy = 0;
         player.onGround = true;
-      }
-    }
-
-    // 계단 안쪽(핑크 내부)로 파고들면 위로 밀어내기 (관통 방지)
-    // (계단 영역인데 표면보다 아래면 내부)
-    if (stairsExistAt(midX)){
-      if ((player.y + player.h*0.8) > surfY && !player.onGround){
-        // 아래로 내려가는 중이면 표면으로 올림
-        if (player.vy > 0){
-          player.y = surfY - player.h;
-          player.vy = 0;
-          player.onGround = true;
-        } else {
-          // 위로 가는 중이면 살짝 왼쪽으로 밀기
-          player.x -= 160 * dt;
-        }
       }
     }
   }
@@ -231,28 +205,28 @@
   function drawStairs(){
     ctx.fillStyle = css("--stair");
 
-    // "왼쪽 끝까지 꽉 차게" 만들기:
-    // 계단 윗면들을 그리면서, 각 단계마다 (0,y)~(W,H)까지 채워서
-    // 왼쪽/아래가 무조건 핑크로 꽉 차게 만든다.
-    const minI = -6;
-    const maxI = 40;
+    // ✅ 계단 모양이 보이게 "x부터 오른쪽/아래"만 채우기
+    // ✅ 단계 수를 크게 늘려서 낮은 단계는 x가 음수까지 가며 왼쪽 끝도 자연스럽게 핑크로 꽉 참
+    const minI = -120;
+    const maxI = 80;
+
     for (let i=minI; i<=maxI; i++){
       const x = anchorX + i*STEP;
       const y = anchorY - i*STEP;
 
-      // 화면 위로 너무 올라간 건 스킵
-      if (y > H+STEP) continue;
+      // y가 화면 아래보다 훨씬 아래면 굳이 그릴 필요 없음
+      if (y > H + STEP) continue;
 
-      // 핵심: x부터가 아니라 "0부터" 채워서 왼쪽이 비지 않게
-      // 다만 계단 형태는 유지되어야 하므로 y만 계단 단계대로 변한다.
-      ctx.fillRect(0, y, W, H - y + 2);
+      // x가 너무 오른쪽이면 스킵
+      if (x > W + STEP) continue;
+
+      ctx.fillRect(x, y, (W - x) + 2, (H - y) + 2);
     }
   }
 
   function draw(){
     ctx.clearRect(0,0,W,H);
 
-    // 계단
     drawStairs();
 
     // 타이머
@@ -262,7 +236,6 @@
     ctx.textAlign = "left";
     ctx.fillText(survive.toFixed(3), 16, 12);
 
-    // 시작/게임오버 화면
     if (!started || dead){
       ctx.fillStyle = css("--white");
       ctx.font = "800 28px system-ui, sans-serif";
@@ -274,7 +247,6 @@
       ctx.font = "700 22px system-ui, sans-serif";
       ctx.fillText("A, W, D로 이동", W/2, H/2 + 10);
 
-      // 랭킹 패널
       const ranks = loadRanks();
       ctx.fillStyle = "rgba(0,0,0,0.35)";
       ctx.fillRect(W/2 - 160, H/2 + 50, 320, 160);
