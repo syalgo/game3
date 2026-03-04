@@ -3,11 +3,12 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>에스컬레이터 게임</title>
+  <title>에스컬레이터 게임(계단 고정)</title>
   <style>
     :root{
       --bg:#0f3d40;
       --stair:#ff3f7f;
+      --stairHi:rgba(255,255,255,.28); /* 계단 윗면 하이라이트 */
       --player:#ff6a92;
       --text:#ff3f7f;
       --white:#ffffff;
@@ -33,25 +34,23 @@
   const ctx = canvas.getContext("2d");
   const W = canvas.width, H = canvas.height;
 
-  // ===== 튜닝 =====
+  // ===== 계단(고정) =====
   const STEP = 44;
+  const ANCHOR_X = Math.floor(W * 0.60);
+  const ANCHOR_Y = Math.floor(H * 0.20);
 
-  const GRAVITY = 1800;
+  // ===== 물리 =====
+  const GRAVITY = 1900;
   const MOVE_SPEED = 420;
-  const JUMP_VY = 740;
+  const JUMP_VY = 760;
   const AIR_CONTROL = 0.82;
 
-  const BASE_FLOW = 150;
-  const FLOW_ACCEL = 12;
+  // “에스컬레이터” 효과: 바닥에 닿아 있을 때 왼쪽으로 밀림(시간 지날수록 증가)
+  const BASE_CONVEYOR = 90;     // px/s
+  const CONVEYOR_ACCEL = 14;    // px/s per second
 
   // ===== 플레이어 =====
-  const player = {
-    w: 22, h: 22,
-    x: Math.floor(W * 0.45),
-    y: Math.floor(H * 0.30),
-    vx: 0, vy: 0,
-    onGround: false
-  };
+  const player = { w:22, h:22, x:0, y:0, vx:0, vy:0, onGround:false };
 
   // ===== 입력 =====
   const key = { a:false, d:false, w:false };
@@ -73,116 +72,68 @@
     if (k==="w" || k===" ") { key.w=false; wLock=false; }
   });
 
-  // ===== 상태 =====
-  let started = false;
-  let dead = true;
-  let survive = 0;
-  let last = 0;
+  // ===== 상태/랭킹 =====
+  let started=false, dead=true, survive=0, last=0;
+  const LS_KEY="escalator_ranking_v4";
+  const loadRanks=()=>{ try{const a=JSON.parse(localStorage.getItem(LS_KEY)||"[]");return Array.isArray(a)?a:[]}catch{return[]} };
+  const saveRank=(s)=>{ const r=loadRanks(); r.push(s); r.sort((a,b)=>b-a); const top=r.slice(0,10); localStorage.setItem(LS_KEY,JSON.stringify(top)); return top; };
 
-  // ===== 랭킹 =====
-  const LS_KEY = "escalator_ranking_v3";
-  const loadRanks = () => {
-    try { const a = JSON.parse(localStorage.getItem(LS_KEY) || "[]"); return Array.isArray(a)?a:[]; }
-    catch { return []; }
-  };
-  const saveRank = (s) => {
-    const r = loadRanks();
-    r.push(s);
-    r.sort((a,b)=>b-a);
-    const top = r.slice(0,10);
-    localStorage.setItem(LS_KEY, JSON.stringify(top));
-    return top;
-  };
-
-  // ===== 계단 기준점(앵커) =====
-  const STAIRS_X0 = Math.floor(W * 0.60);
-  const STAIRS_Y0 = Math.floor(H * 0.20);
-
-  let anchorX = STAIRS_X0;
-  let anchorY = STAIRS_Y0;
-
-  function normalizeAnchor(){
-    const k = Math.floor((STAIRS_X0 - anchorX) / STEP);
-    if (k !== 0){
-      anchorX += k * STEP;
-      anchorY -= k * STEP; // 래핑 시 y도 같이 보정(튐 방지)
-    }
-  }
-
+  // ===== 계단 수학 =====
+  // 계단선(surface): y = ANCHOR_Y - floor((x-ANCHOR_X)/STEP)*STEP
   function surfaceYAt(x){
-    const dx = x - anchorX;
-    const idx = Math.floor(dx / STEP);
-    return anchorY - idx * STEP;
+    const idx = Math.floor((x - ANCHOR_X) / STEP);
+    return ANCHOR_Y - idx * STEP;
   }
 
-  // 계단이 존재하는 x범위를 넓혀서(왼쪽도) 착지 가능하게
-  function stairsExistAt(x){
-    return x >= anchorX - STEP * 80; // 왼쪽으로 충분히 넓게
+  // 계단 “고체” 판정: 어떤 x에서 y가 surface보다 아래면(큰 y) 내부(핑크)
+  function isSolidAt(x, y){
+    return y >= surfaceYAt(x);
   }
 
+  // 시작은 계단 위에 스폰
   function reset(){
-    started = true;
-    dead = false;
-    survive = 0;
-    last = performance.now();
-
-    player.x = Math.floor(W * 0.45);
-    player.vx = 0;
-    player.vy = 0;
-    player.onGround = false;
-
-    anchorX = STAIRS_X0;
-    anchorY = STAIRS_Y0;
-
-    // ✅ 시작할 때 계단 표면 위에 올려놓기
+    started=true; dead=false; survive=0; last=performance.now();
+    player.x = Math.floor(W*0.45);
+    player.vx=0; player.vy=0; player.onGround=false;
     const midX = player.x + player.w/2;
-    const surfY = surfaceYAt(midX);
-    player.y = surfY - player.h;
-    player.onGround = true;
+    player.y = surfaceYAt(midX) - player.h;
+    player.onGround=true;
   }
 
-  canvas.addEventListener("click", () => {
-    if (!started || dead) reset();
-  });
+  canvas.addEventListener("click", ()=>{ if(!started || dead) reset(); });
 
   function die(){
-    dead = true;
+    dead=true;
     saveRank(Number(survive.toFixed(3)));
   }
 
-  // ===== 업데이트 =====
-  function update(dt){
-    if (!started || dead) return;
+  // ===== 충돌 처리 =====
+  // 1) X 이동 후 “옆면 침투”하면 X 되돌리기
+  function resolveSide(prevX){
+    // 플레이어 중심 높이 부근에서 좌/우를 검사
+    const yProbe1 = player.y + player.h*0.30;
+    const yProbe2 = player.y + player.h*0.75;
 
-    survive += dt;
-    const flow = BASE_FLOW + FLOW_ACCEL * survive;
-
-    anchorX -= flow * dt;
-    anchorY += (flow * 0.18) * dt;
-    normalizeAnchor();
-
-    const wish = (key.d?1:0) - (key.a?1:0);
-    const control = player.onGround ? 1.0 : AIR_CONTROL;
-    player.vx = wish * MOVE_SPEED * control;
-
-    if (key.w && player.onGround && !wLock){
-      player.vy = -JUMP_VY;
-      player.onGround = false;
-      wLock = true;
+    // 오른쪽으로 이동 중이면 오른쪽 면 검사
+    if (player.x > prevX){
+      const rx = player.x + player.w;
+      // 오른쪽 면의 두 지점이 고체 내부면 -> 벽에 박힌 것 => 되돌림
+      if (isSolidAt(rx, yProbe1) || isSolidAt(rx, yProbe2)){
+        player.x = prevX;
+      }
     }
+    // 왼쪽으로 이동 중이면 왼쪽 면 검사
+    else if (player.x < prevX){
+      const lx = player.x;
+      if (isSolidAt(lx, yProbe1) || isSolidAt(lx, yProbe2)){
+        player.x = prevX;
+      }
+    }
+  }
 
-    const prevY = player.y;
-
-    player.vy += GRAVITY * dt;
-
-    player.x += player.vx * dt;
-    player.y += player.vy * dt;
-
-    if (player.y > H + 80) { die(); return; }
-    if (player.x < -200 || player.x > W + 200) { die(); return; }
-
-    // 착지: 위에서 내려오며 표면을 통과할 때만
-    player.onGround = false;
+  // 2) Y 이동 후 “위에서 내려올 때만” 착지
+  function resolveFloor(prevY){
+    player.onGround=false;
 
     const midX = player.x + player.w/2;
     const surfY = surfaceYAt(midX);
@@ -190,8 +141,18 @@
     const prevBottom = prevY + player.h;
     const nowBottom  = player.y + player.h;
 
-    if (stairsExistAt(midX)){
-      if (player.vy >= 0 && prevBottom <= surfY && nowBottom >= surfY){
+    // 위에서 내려오며 표면 통과할 때만 착지
+    if (player.vy >= 0 && prevBottom <= surfY && nowBottom >= surfY){
+      player.y = surfY - player.h;
+      player.vy = 0;
+      player.onGround = true;
+    }
+
+    // “관통 방지”: 내부로 들어갔는데 착지 못했으면(옆에서 파고듦) 위로 밀어올림/되돌림
+    // (안전장치)
+    const probeY = player.y + player.h*0.8;
+    if (!player.onGround && isSolidAt(midX, probeY)){
+      if (player.vy > 0){
         player.y = surfY - player.h;
         player.vy = 0;
         player.onGround = true;
@@ -199,36 +160,78 @@
     }
   }
 
+  // ===== 업데이트 =====
+  function update(dt){
+    if(!started || dead) return;
+
+    survive += dt;
+
+    // 컨베이어 힘(바닥에 닿아있으면 왼쪽으로 밀림)
+    const conveyor = BASE_CONVEYOR + CONVEYOR_ACCEL * survive;
+
+    // 입력 속도
+    const wish = (key.d?1:0) - (key.a?1:0);
+    const control = player.onGround ? 1.0 : AIR_CONTROL;
+    let inputVx = wish * MOVE_SPEED * control;
+
+    // 바닥이면 컨베이어 적용(왼쪽으로)
+    player.vx = inputVx + (player.onGround ? -conveyor : 0);
+
+    // 점프
+    if (key.w && player.onGround && !wLock){
+      player.vy = -JUMP_VY;
+      player.onGround=false;
+      wLock=true;
+    }
+
+    // 중력
+    player.vy += GRAVITY * dt;
+
+    // X 이동 + 옆면 충돌
+    const prevX = player.x;
+    player.x += player.vx * dt;
+    resolveSide(prevX);
+
+    // Y 이동 + 바닥 충돌
+    const prevY = player.y;
+    player.y += player.vy * dt;
+    resolveFloor(prevY);
+
+    // 사망 조건
+    if (player.y > H + 80) { die(); return; }
+    if (player.x < -220 || player.x > W + 220) { die(); return; }
+  }
+
   // ===== 렌더 =====
   function css(v){ return getComputedStyle(document.documentElement).getPropertyValue(v).trim(); }
 
   function drawStairs(){
+    // 계단 덩어리(고체 영역)
     ctx.fillStyle = css("--stair");
 
-    // ✅ 계단 모양이 보이게 "x부터 오른쪽/아래"만 채우기
-    // ✅ 단계 수를 크게 늘려서 낮은 단계는 x가 음수까지 가며 왼쪽 끝도 자연스럽게 핑크로 꽉 참
+    // 화면을 덮을 만큼 계단 단계 많이 그림
     const minI = -120;
     const maxI = 80;
 
-    for (let i=minI; i<=maxI; i++){
-      const x = anchorX + i*STEP;
-      const y = anchorY - i*STEP;
+    for(let i=minI;i<=maxI;i++){
+      const x = ANCHOR_X + i*STEP;
+      const y = ANCHOR_Y - i*STEP;
 
-      // y가 화면 아래보다 훨씬 아래면 굳이 그릴 필요 없음
       if (y > H + STEP) continue;
-
-      // x가 너무 오른쪽이면 스킵
       if (x > W + STEP) continue;
 
+      // “x부터 오른쪽/아래”만 채우면 계단 모양이 살아남
       ctx.fillRect(x, y, (W - x) + 2, (H - y) + 2);
+
+      // 윗면 하이라이트(밝은 바닥 느낌)
+      // (윗면 선만 살짝 밝게)
+      ctx.fillStyle = css("--stairHi");
+      ctx.fillRect(x, y, (W - x) + 2, 6);
+      ctx.fillStyle = css("--stair");
     }
   }
 
-  function draw(){
-    ctx.clearRect(0,0,W,H);
-
-    drawStairs();
-
+  function drawUI(){
     // 타이머
     ctx.fillStyle = css("--text");
     ctx.font = "700 32px system-ui, sans-serif";
@@ -261,22 +264,30 @@
         ctx.fillText(`${String(i+1).padStart(2," ")}.  ${Number(ranks[i]).toFixed(3)}s`, W/2 - 140, H/2 + 95 + i*14);
       }
       ctx.textAlign = "center";
-      return;
+    }
+  }
+
+  function draw(){
+    ctx.clearRect(0,0,W,H);
+    drawStairs();
+
+    if (started && !dead){
+      // 플레이어
+      ctx.save();
+      ctx.translate(player.x + player.w/2, player.y + player.h/2);
+      const tilt = Math.max(-0.35, Math.min(0.35, player.vy * 0.0008));
+      ctx.rotate(tilt);
+      ctx.fillStyle = css("--player");
+      ctx.fillRect(-player.w/2, -player.h/2, player.w, player.h);
+      ctx.restore();
     }
 
-    // 플레이어
-    ctx.save();
-    ctx.translate(player.x + player.w/2, player.y + player.h/2);
-    const tilt = Math.max(-0.35, Math.min(0.35, player.vy * 0.0008));
-    ctx.rotate(tilt);
-    ctx.fillStyle = css("--player");
-    ctx.fillRect(-player.w/2, -player.h/2, player.w, player.h);
-    ctx.restore();
+    drawUI();
   }
 
   function loop(now){
-    if (!last) last = now;
-    const dt = Math.min(0.033, (now - last)/1000);
+    if(!last) last = now;
+    const dt = Math.min(0.033, (now-last)/1000);
     last = now;
 
     update(dt);
